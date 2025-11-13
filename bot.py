@@ -2,6 +2,24 @@
 import os
 import logging
 from datetime import datetime
+# --- tiny web server for Render health checks ---
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Health(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def start_healthcheck():
+    port = int(os.getenv("PORT", "10000"))  # Render injects PORT automatically
+    server = HTTPServer(("0.0.0.0", port), Health)
+    server.serve_forever()
+
+# start it on a background thread so it doesn’t block the bot
+threading.Thread(target=start_healthcheck, daemon=True).start()
+# --- end health server ---
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup
