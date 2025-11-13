@@ -439,7 +439,7 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     # Notify admin
-    if ADMIN_CHAT_ID:
+  if ADMIN_CHAT_ID:
         try:
             clash_text = ""
             if spacing["overlap"]:
@@ -459,8 +459,8 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Location: {booking['location']}\n"
                     f"Hours: {booking['hours']}\n"
                     f"Base fee (no travel): £{booking['base_price']}\n"
-                    f"{clash_text}\n"
-                    "Set travel fee with:\n"
+                    f"{clash_text}"
+                    "\nSet travel fee with:\n"
                     f"/travel {user_id} <amount>"
                 ),
             )
@@ -568,4 +568,11 @@ async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Location: {booking['location']}\n"
                     f"Players: {booking['players']}\n"
                     f"Base fee (no travel): £{booking['base_price']}\n"
-                    f"{clash_t_
+                    f"{clash_text}"
+                    "\nSet travel fee with:\n"
+                    f"/travel {user_id} <amount>"
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"Admin notify failed (matchday): {e}")
+
