@@ -15,18 +15,25 @@ class Health(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
+
 def start_healthcheck():
     port = int(os.getenv("PORT", "10000"))
     server = HTTPServer(("0.0.0.0", port), Health)
     server.serve_forever()
+
 
 threading.Thread(target=start_healthcheck, daemon=True).start()
 # --- end health server ---
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, ContextTypes, CallbackQueryHandler,
-    ConversationHandler, MessageHandler, filters
+    Application,
+    CommandHandler,
+    ContextTypes,
+    CallbackQueryHandler,
+    ConversationHandler,
+    MessageHandler,
+    filters,
 )
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -37,10 +44,12 @@ if ADMIN_CHAT_ID:
         ADMIN_CHAT_ID = int(ADMIN_CHAT_ID)
     except ValueError:
         ADMIN_CHAT_ID = None
+else:
+    ADMIN_CHAT_ID = None
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
 )
 logger = logging.getLogger("Invalid8thBot")
 
@@ -55,12 +64,16 @@ logger = logging.getLogger("Invalid8thBot")
     MATCHDAY_PLAYERS,
 ) = range(8)
 
+# Pending bookings by user_id
 BOOKINGS = {}
+# Confirmed bookings list (used for clash checks)
 CONFIRMED_BOOKINGS = []
+
 
 # ---------- HELPERS ---------- #
 
 def parse_date_str(date_text: str) -> date:
+    """Parse flexible date formats into a date object."""
     date_text = date_text.strip()
     fmts = ["%d %b %Y", "%d %B %Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"]
     for fmt in fmts:
@@ -70,41 +83,56 @@ def parse_date_str(date_text: str) -> date:
             continue
     raise ValueError("Unrecognised date format")
 
+
 def parse_time_str(time_text: str) -> time:
+    """Parse HH:MM 24h time."""
     time_text = time_text.strip()
     return datetime.strptime(time_text, "%H:%M").time()
 
-def check_time_spacing(start_dt: datetime, end_dt: datetime, other_bookings: list):
+
+def check_time_spacing(start_dt: datetime, end_dt: datetime, other_bookings):
+    """
+    Check overlap and <3h gaps vs other bookings.
+    Returns dict: {"overlap": bool, "close_gap": bool, "nearest": booking_or_None}
+    """
     result = {"overlap": False, "close_gap": False, "nearest": None}
     min_gap = None
+
     for b in other_bookings:
         b_start = b.get("start_dt")
         b_end = b.get("end_dt")
         if not b_start or not b_end:
             continue
-        # overlap
+
+        # Overlap
         if start_dt < b_end and end_dt > b_start:
             result["overlap"] = True
             if result["nearest"] is None or b_start < result["nearest"]["start_dt"]:
                 result["nearest"] = b
             continue
-        # gap
+
+        # Non-overlap gap
         if end_dt <= b_start:
             gap_seconds = (b_start - end_dt).total_seconds()
         elif start_dt >= b_end:
             gap_seconds = (start_dt - b_end).total_seconds()
         else:
             continue
+
         if min_gap is None or gap_seconds < min_gap:
             min_gap = gap_seconds
             result["nearest"] = b
-            result["close_gap"] = gap_seconds < 3 * 3600
+            result["close_gap"] = gap_seconds < 3 * 3600  # 3 hours
+
     return result
 
+
 def save_booking_to_csv(booking: dict):
+    """Save confirmed booking and store it in CONFIRMED_BOOKINGS."""
     try:
         os.makedirs("data", exist_ok=True)
         total = booking["base_price"] + (booking.get("travel_fee") or 0)
+
         line = (
             f"{datetime.utcnow().isoformat()},"
             f"{booking.get('user_id')},"
@@ -123,11 +151,14 @@ def save_booking_to_csv(booking: dict):
             f"{booking.get('start_dt').isoformat() if booking.get('start_dt') else ''},"
             f"{booking.get('end_dt').isoformat() if booking.get('end_dt') else ''}\n"
         )
+
         with open("data/bookings.csv", "a", encoding="utf-8") as f:
             f.write(line)
+
         CONFIRMED_BOOKINGS.append(booking.copy())
     except Exception as e:
         logger.warning(f"Failed to save booking CSV: {e}")
+
 
 def main_menu_keyboard():
     buttons = [
@@ -135,6 +166,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("ℹ️ FAQs", callback_data="faqs")],
     ]
     return InlineKeyboardMarkup(buttons)
+
 
 # ---------- BASIC COMMANDS ---------- #
 
@@ -148,13 +180,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /start – main menu\n"
         "• /book – start a booking\n"
         "• /faqs – pricing & info\n"
-        "• /help – show commands\n\n"
+        "• /help – show commands\n"
+        "• /export – download bookings (admin only)\n\n"
         "_If you're an Invalid8th member, use your main Instagram handle so we can verify you._"
     )
     if update.message:
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
-    else:
-        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        await update.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=main_menu_keyboard()
+        )
+    elif update.callback_query:
+        await update.callback_query.edit_message_text(
+            text, parse_mode="Markdown", reply_markup=main_menu_keyboard()
+        )
+
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -162,9 +200,12 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /start – main menu\n"
         "• /book – book a lifestyle or matchday shoot\n"
         "• /faqs – FAQs & pricing\n"
-        "• /help – this help message\n",
-        parse_mode="Markdown"
+        "• /travel <user_id> <amount> – set travel fee (admin)\n"
+        "• /confirm <user_id> – confirm payment & booking (admin)\n"
+        "• /export – download bookings CSV (admin)\n",
+        parse_mode="Markdown",
     )
+
 
 async def faqs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -187,22 +228,25 @@ async def faqs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(
             text, parse_mode="Markdown", reply_markup=main_menu_keyboard()
         )
-    else:
+    elif update.message:
         await update.message.reply_text(
             text, parse_mode="Markdown", reply_markup=main_menu_keyboard()
         )
 
+
 # ---------- BOOKING FLOW ---------- #
 
 async def book_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for /book and 📸 button."""
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
             "📸 Your *full name*?", parse_mode="Markdown"
         )
-    else:
+    elif update.message:
         await update.message.reply_text("📸 Your *full name*?", parse_mode="Markdown")
     return BOOK_NAME
+
 
 async def book_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["book_name"] = update.message.text.strip()
@@ -213,15 +257,18 @@ async def book_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return BOOK_IG
 
+
 async def book_ig(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ig = update.message.text.strip()
     if not ig.startswith("@"):
         ig = "@" + ig
     context.user_data["book_ig"] = ig
     await update.message.reply_text(
-        "Date of the shoot? *(e.g., 24 Nov 2025 or 24/11/2025)*", parse_mode="Markdown"
+        "Date of the shoot? *(e.g., 24 Nov 2025 or 24/11/2025)*",
+        parse_mode="Markdown",
     )
     return BOOK_DATE
+
 
 async def book_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date_text = update.message.text.strip()
@@ -233,12 +280,16 @@ async def book_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
         return BOOK_DATE
+
     context.user_data["book_date_text"] = date_text
     context.user_data["book_date"] = parsed_date.isoformat()
+
     await update.message.reply_text(
-        "What *time* is the shoot? *(24h format, e.g., 14:30 or 09:00)*", parse_mode="Markdown"
+        "What *time* is the shoot? *(24h format, e.g., 14:30 or 09:00)*",
+        parse_mode="Markdown",
     )
     return BOOK_TIME
+
 
 async def book_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_text = update.message.text.strip()
@@ -250,15 +301,19 @@ async def book_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
         return BOOK_TIME
+
     context.user_data["book_time_text"] = time_text
     context.user_data["book_time"] = parsed_time.isoformat(timespec="minutes")
+
     await update.message.reply_text(
         "Location? *(area or exact address)*", parse_mode="Markdown"
     )
     return BOOK_LOCATION
 
+
 async def book_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["book_location"] = update.message.text.strip()
+
     buttons = [
         [
             InlineKeyboardButton("Lifestyle", callback_data="type_lifestyle"),
@@ -272,29 +327,35 @@ async def book_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return BOOK_TYPE
 
+
 async def book_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     choice = q.data
+
     if choice == "type_lifestyle":
         context.user_data["shoot_type"] = "lifestyle"
         await q.edit_message_text(
             "How many *hours* do you want to book?", parse_mode="Markdown"
         )
         return LIFESTYLE_HOURS
-    elif choice == "type_matchday":
+
+    if choice == "type_matchday":
         context.user_data["shoot_type"] = "matchday"
         await q.edit_message_text(
             "How many *players* from the same team?", parse_mode="Markdown"
         )
         return MATCHDAY_PLAYERS
+
     await q.edit_message_text("Unknown choice. Please /book again.")
     return ConversationHandler.END
+
 
 async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     text = update.message.text.strip()
+
     try:
         hours = int(text)
         if hours <= 0:
@@ -304,14 +365,18 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Please send a valid number of hours (e.g. 1, 2, 3)."
         )
         return LIFESTYLE_HOURS
+
+    # Pricing: £150 if 1h, otherwise £100/h
     if hours < 2:
         base_price = 150
     else:
         base_price = hours * 100
+
     d = date.fromisoformat(context.user_data["book_date"])
     t = time.fromisoformat(context.user_data["book_time"])
     start_dt = datetime.combine(d, t)
     end_dt = start_dt + timedelta(hours=hours)
+
     booking = {
         "user_id": user_id,
         "username": user.username,
@@ -327,12 +392,16 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "travel_fee": None,
         "start_dt": start_dt,
         "end_dt": end_dt,
+        "status": "pending_travel",
     }
     BOOKINGS[user_id] = booking
+
+    # clash check vs confirmed + other pending
     others = list(CONFIRMED_BOOKINGS) + [
         b for uid, b in BOOKINGS.items() if uid != user_id
     ]
     spacing = check_time_spacing(start_dt, end_dt, others)
+
     conflict_note = ""
     if spacing["overlap"]:
         conflict_note = (
@@ -341,9 +410,10 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif spacing["close_gap"]:
         conflict_note = (
-            "\n\n⚠️ _This is quite close to another booking._ "
+            "\n\n⚠️ _This is within 3 hours of another booking._ "
             "We'll confirm manually and let you know if timing works."
         )
+
     await update.message.reply_text(
         "Lifestyle Shoot – Summary\n"
         f"• Name: {booking['name']}\n"
@@ -358,13 +428,16 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{conflict_note}",
         parse_mode="Markdown",
     )
+
+    # notify admin
     if ADMIN_CHAT_ID:
         try:
             clash_text = ""
             if spacing["overlap"]:
                 clash_text = "CLASH: overlaps with another booking.\n"
             elif spacing["close_gap"]:
-                clash_text = "NOTE: less than 3 hours from another booking.\n"
+                clash_text = "NOTE: within 3 hours of another booking.\n"
+
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
                 text=(
@@ -384,12 +457,15 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.warning(f"Admin notify failed (lifestyle): {e}")
+
     return ConversationHandler.END
+
 
 async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     text = update.message.text.strip()
+
     try:
         players = int(text)
         if players <= 0:
@@ -399,14 +475,19 @@ async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Please send a valid number of players (e.g. 1, 2, 3)."
         )
         return MATCHDAY_PLAYERS
+
+    # Pricing: £300 for up to 3 players, else £100/player
     if players <= 3:
         base_price = 300
     else:
         base_price = players * 100
+
     d = date.fromisoformat(context.user_data["book_date"])
     t = time.fromisoformat(context.user_data["book_time"])
     start_dt = datetime.combine(d, t)
+    # Assume matchday block is ~3h
     end_dt = start_dt + timedelta(hours=3)
+
     booking = {
         "user_id": user_id,
         "username": user.username,
@@ -422,12 +503,15 @@ async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "travel_fee": None,
         "start_dt": start_dt,
         "end_dt": end_dt,
+        "status": "pending_travel",
     }
     BOOKINGS[user_id] = booking
+
     others = list(CONFIRMED_BOOKINGS) + [
         b for uid, b in BOOKINGS.items() if uid != user_id
     ]
     spacing = check_time_spacing(start_dt, end_dt, others)
+
     conflict_note = ""
     if spacing["overlap"]:
         conflict_note = (
@@ -436,9 +520,10 @@ async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif spacing["close_gap"]:
         conflict_note = (
-            "\n\n⚠️ _This is quite close to another booking._ "
+            "\n\n⚠️ _This is within 3 hours of another booking._ "
             "We'll confirm manually and let you know if timing works."
         )
+
     await update.message.reply_text(
         "Matchday Shoot – Summary\n"
         f"• Name: {booking['name']}\n"
@@ -453,13 +538,15 @@ async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{conflict_note}",
         parse_mode="Markdown",
     )
+
     if ADMIN_CHAT_ID:
         try:
             clash_text = ""
             if spacing["overlap"]:
                 clash_text = "CLASH: overlaps with another booking.\n"
             elif spacing["close_gap"]:
-                clash_text = "NOTE: less than 3 hours from another booking.\n"
+                clash_text = "NOTE: within 3 hours of another booking.\n"
+
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
                 text=(
@@ -479,40 +566,43 @@ async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.warning(f"Admin notify failed (matchday): {e}")
+
     return ConversationHandler.END
 
-# ---------- ADMIN TRAVEL ---------- #
+
+# ---------- ADMIN: TRAVEL + CONFIRM + EXPORT ---------- #
 
 async def set_travel_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: /travel <user_id> <amount> – set travel, send final price, mark awaiting_payment."""
     if ADMIN_CHAT_ID is None:
         await update.message.reply_text("ADMIN_CHAT_ID is not configured.")
         return
+
     if update.effective_chat.id != ADMIN_CHAT_ID:
         await update.message.reply_text("You are not allowed to use this command.")
         return
+
     if len(context.args) != 2:
         await update.message.reply_text("Use: /travel <user_id> <amount>")
         return
+
     try:
         user_id = int(context.args[0])
         travel_fee = int(context.args[1])
     except ValueError:
         await update.message.reply_text("Both user_id and amount must be numbers.")
         return
+
     booking = BOOKINGS.get(user_id)
     if not booking:
         await update.message.reply_text("No active booking found for that user.")
         return
+
     booking["travel_fee"] = travel_fee
-    spacing = check_time_spacing(
-        booking["start_dt"], booking["end_dt"], CONFIRMED_BOOKINGS
-    )
-    warning_lines = []
-    if spacing["overlap"]:
-        warning_lines.append("⚠️ WARNING: This overlaps with an existing confirmed booking.")
-    elif spacing["close_gap"]:
-        warning_lines.append("ℹ️ Note: This is less than 3 hours from another confirmed booking.")
+    booking["status"] = "awaiting_payment"
     total = booking["base_price"] + travel_fee
+
+    # Tell client final price + bank details
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -522,36 +612,191 @@ async def set_travel_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• Travel: £{travel_fee}\n\n"
                 f"Total to pay: £{total}\n\n"
                 "Please send payment to:\n"
-                "Name: Great Ajereh\n"
-                "Sort Code: 12-34-56\n"
-                "Account: 12345678\n\n"
-                "Your slot is not locked in until payment is made."
+                "Name: GREAT AJEREH\n"
+                "Sort Code: 04-29-09\n"
+                "Account: 91568455\n\n"
+                "Your slot is not locked in until payment is made.\n\n"
+                "_Once you’ve paid, send a screenshot of your payment here._"
             ),
             parse_mode="Markdown",
         )
     except Exception as e:
         logger.warning(f"Failed to message client in /travel: {e}")
         await update.message.reply_text("Could not message the client, but fee was set.")
-    save_booking_to_csv(booking)
-    warn_text = ("\n".join(warning_lines) + "\n") if warning_lines else ""
+        return
+
     await update.message.reply_text(
-        f"{warn_text}"
-        f"Travel fee set to £{travel_fee} for user {user_id}. Total: £{total}."
+        f"Travel fee set to £{travel_fee} for user {user_id}. "
+        f"Total they see: £{total}.\n\n"
+        "When you’ve confirmed they’ve paid, run:\n"
+        f"/confirm {user_id}"
     )
+
+
+async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: /confirm <user_id> – mark booking paid & confirmed."""
+    if ADMIN_CHAT_ID is None:
+        await update.message.reply_text("ADMIN_CHAT_ID is not configured.")
+        return
+
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("You are not allowed to use this command.")
+        return
+
+    if len(context.args) != 1:
+        await update.message.reply_text("Use: /confirm <user_id>")
+        return
+
+    try:
+        user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("user_id must be a number.")
+        return
+
+    booking = BOOKINGS.get(user_id)
+    if not booking:
+        await update.message.reply_text("No active booking found for that user.")
+        return
+
+    if booking.get("travel_fee") is None:
+        await update.message.reply_text("Travel fee not set yet. Use /travel first.")
+        return
+
+    booking["status"] = "confirmed"
+    save_booking_to_csv(booking)
+    # remove from pending
+    del BOOKINGS[user_id]
+
+    total = booking["base_price"] + (booking.get("travel_fee") or 0)
+
+    # tell client
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "Payment received – your booking is *CONFIRMED* 🎉\n\n"
+                f"Type: {booking['type'].title()} shoot\n"
+                f"• Date: {booking['date']}\n"
+                f"• Time: {booking['time']}\n"
+                f"• Location: {booking['location']}\n"
+                f"• Instagram: {booking['instagram']}\n\n"
+                "See you there 👌🏾"
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to message client in /confirm: {e}")
+
+    # tell admin
+    await update.message.reply_text(
+        "✅ Booking confirmed.\n"
+        f"User ID: {user_id}\n"
+        f"Name: {booking['name']}\n"
+        f"Date: {booking['date']} {booking['time']}\n"
+        f"Location: {booking['location']}\n"
+        f"Total paid: £{total}"
+    )
+
+
+async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User sends payment screenshot – forward to admin if awaiting_payment."""
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    msg = update.message
+
+    # ignore admin's own media
+    if ADMIN_CHAT_ID is not None and chat_id == ADMIN_CHAT_ID:
+        return
+
+    booking = BOOKINGS.get(user.id)
+
+    # only react if awaiting payment
+    if not booking or booking.get("status") != "awaiting_payment":
+        await msg.reply_text(
+            "I can't link this payment to an active booking.\n"
+            "If you think this is wrong, message @invalid8th."
+        )
+        return
+
+    # get image file_id (photo or image document)
+    file_id = None
+    if msg.photo:
+        file_id = msg.photo[-1].file_id
+    elif msg.document and msg.document.mime_type and msg.document.mime_type.startswith(
+        "image/"
+    ):
+        file_id = msg.document.file_id
+
+    if not file_id:
+        await msg.reply_text("Please send your payment proof as a photo or image file.")
+        return
+
+    # forward to admin
+    if ADMIN_CHAT_ID:
+        total_expected = booking["base_price"] + (booking.get("travel_fee") or 0)
+        caption = (
+            "💸 *Payment proof received*\n"
+            f"User: @{user.username or user.full_name} (ID: {user.id})\n"
+            f"Name: {booking['name']}\n"
+            f"Type: {booking['type']} | Date: {booking['date']} {booking['time']}\n"
+            f"Location: {booking['location']}\n"
+            f"Expected total: £{total_expected}\n\n"
+            f"Use `/confirm {user.id}` once you've checked your bank."
+        )
+        await context.bot.send_photo(
+            chat_id=ADMIN_CHAT_ID,
+            photo=file_id,
+            caption=caption,
+            parse_mode="Markdown",
+        )
+
+    # confirm to user
+    await msg.reply_text(
+        "Got your payment screenshot ✅\n"
+        "Once we’ve checked it, you’ll get a confirmation message here."
+    )
+
+
+async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: /export – send bookings.csv for Excel."""
+    if ADMIN_CHAT_ID is None or update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("You are not allowed to use this command.")
+        return
+
+    file_path = "data/bookings.csv"
+    if not os.path.exists(file_path):
+        await update.message.reply_text("No bookings recorded yet.")
+        return
+
+    with open(file_path, "rb") as f:
+        await context.bot.send_document(
+            chat_id=ADMIN_CHAT_ID,
+            document=f,
+            filename="bookings.csv",
+            caption="Here are all confirmed bookings.",
+        )
+
 
 # ---------- APP SETUP ---------- #
 
 def build_app() -> Application:
     if not TOKEN:
         raise RuntimeError("Missing TELEGRAM_TOKEN env var.")
+
     app = Application.builder().token(TOKEN).build()
+
+    # commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("faqs", faqs))
     app.add_handler(CommandHandler("travel", set_travel_fee))
-    # FAQ button
+    app.add_handler(CommandHandler("confirm", confirm_payment))
+    app.add_handler(CommandHandler("export", export_data))
+
+    # faq button
     app.add_handler(CallbackQueryHandler(faqs, pattern="^faqs$"))
-    # Booking conversation (handles /book and the 📸 button)
+
+    # booking conversation (handles /book and 📸 button)
     book_conv = ConversationHandler(
         entry_points=[
             CommandHandler("book", book_entry),
@@ -563,19 +808,38 @@ def build_app() -> Application:
             BOOK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_date)],
             BOOK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_time)],
             BOOK_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_location)],
-            BOOK_TYPE: [CallbackQueryHandler(book_type, pattern="^type_(lifestyle|matchday)$")],
-            LIFESTYLE_HOURS: [MessageHandler(filters.TEXT & ~filters.COMMAND, lifestyle_hours)],
-            MATCHDAY_PLAYERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, matchday_players)],
+            BOOK_TYPE: [
+                CallbackQueryHandler(
+                    book_type, pattern="^type_(lifestyle|matchday)$"
+                )
+            ],
+            LIFESTYLE_HOURS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, lifestyle_hours)
+            ],
+            MATCHDAY_PLAYERS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, matchday_players)
+            ],
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
     )
     app.add_handler(book_conv)
+
+    # payment screenshot handler
+    app.add_handler(
+        MessageHandler(
+            (filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND,
+            handle_payment_proof,
+        )
+    )
+
     return app
+
 
 def main():
     app = build_app()
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
