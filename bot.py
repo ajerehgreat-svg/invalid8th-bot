@@ -513,7 +513,7 @@ async def set_travel_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif spacing["close_gap"]:
         warning_lines.append("ℹ️ Note: This is less than 3 hours from another confirmed booking.")
     total = booking["base_price"] + travel_fee
-    try:
+       try:
         await context.bot.send_message(
             chat_id=user_id,
             text=(
@@ -521,15 +521,15 @@ async def set_travel_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• Shoot fee: £{booking['base_price']}\n"
                 f"• Travel: £{travel_fee}\n\n"
                 f"**Total to pay: £{total}**\n\n"
-               "Please send payment to:\n"
-"Name: Great Ajereh\n"
-"Sort Code: 04-29-09\n"
-"Account: 91568455\n\n"
-"Your slot is *not* locked in until payment is made.",
-
+                "Please send payment to:\n"
+                "Name: GREAT AJEREH\n"
+                "Sort Code: 04-29-09\n"
+                "Account: 91568455\n\n"
+                "Your slot is *not* locked in until payment is made.",
             ),
             parse_mode="Markdown",
         )
+
     except Exception as e:
         logger.warning(f"Failed to message client in /travel: {e}")
         await update.message.reply_text("Could not message the client, but fee was set.")
