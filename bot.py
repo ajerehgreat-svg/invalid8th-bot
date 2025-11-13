@@ -158,6 +158,67 @@ def save_booking_to_csv(booking: dict):
         CONFIRMED_BOOKINGS.append(booking.copy())
     except Exception as e:
         logger.warning(f"Failed to save booking CSV: {e}")
+def _escape_ics_text(text: str) -> str:
+    """Escape text for ICS (commas, semicolons, backslashes, newlines)."""
+    if text is None:
+        return ""
+    return (
+        str(text)
+        .replace("\\", "\\\\")
+        .replace(",", "\\,")
+        .replace(";", "\\;")
+        .replace("\n", "\\n")
+    )
+
+
+def _ics_datetime(dt: datetime) -> str:
+    """Format datetime as YYYYMMDDTHHMMSS for ICS (floating local time)."""
+    return dt.strftime("%Y%m%dT%H%M%S")
+
+
+def generate_ics_for_booking(booking: dict) -> str:
+    """Create ICS content for a single booking."""
+    start_dt = booking.get("start_dt")
+    end_dt = booking.get("end_dt")
+
+    if not start_dt or not end_dt:
+        return ""
+
+    uid = f"{booking.get('user_id')}-{_ics_datetime(start_dt)}@invalid8th"
+    dtstamp = _ics_datetime(datetime.utcnow())
+
+    summary = f"Invalid8th {booking.get('type', '').title()} Shoot"
+    location = _escape_ics_text(booking.get("location", ""))
+    description_lines = [
+        f"Name: {booking.get('name')}",
+        f"Instagram: {booking.get('instagram')}",
+        f"Type: {booking.get('type')}",
+    ]
+    if booking.get("hours"):
+        description_lines.append(f"Hours: {booking.get('hours')}")
+    if booking.get("players"):
+        description_lines.append(f"Players: {booking.get('players')}")
+    total = booking.get("base_price", 0) + (booking.get("travel_fee") or 0)
+    description_lines.append(f"Total: £{total}")
+
+    description = _escape_ics_text("\n".join(description_lines))
+
+    ics = (
+        "BEGIN:VCALENDAR\n"
+        "VERSION:2.0\n"
+        "PRODID:-//Invalid8th//Booking Bot//EN\n"
+        "BEGIN:VEVENT\n"
+        f"UID:{uid}\n"
+        f"DTSTAMP:{dtstamp}\n"
+        f"DTSTART:{_ics_datetime(start_dt)}\n"
+        f"DTEND:{_ics_datetime(end_dt)}\n"
+        f"SUMMARY:{_escape_ics_text(summary)}\n"
+        f"LOCATION:{location}\n"
+        f"DESCRIPTION:{description}\n"
+        "END:VEVENT\n"
+        "END:VCALENDAR\n"
+    )
+    return ics
 
 
 def main_menu_keyboard():
@@ -661,13 +722,25 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if booking.get("travel_fee") is None:
         await update.message.reply_text("Travel fee not set yet. Use /travel first.")
         return
-
     booking["status"] = "confirmed"
     save_booking_to_csv(booking)
     # remove from pending
     del BOOKINGS[user_id]
 
     total = booking["base_price"] + (booking.get("travel_fee") or 0)
+
+    # --- create ICS file for calendar ---
+    ics_content = generate_ics_for_booking(booking)
+    ics_path = None
+    if ics_content:
+        try:
+            os.makedirs("data/ics", exist_ok=True)
+            ics_filename = f"booking_{booking['user_id']}_{booking['start_dt'].strftime('%Y%m%dT%H%M%S')}.ics"
+            ics_path = os.path.join("data", "ics", ics_filename)
+            with open(ics_path, "w", encoding="utf-8") as f:
+                f.write(ics_content)
+        except Exception as e:
+            logger.warning(f"Failed to write ICS file: {e}")
 
     # tell client
     try:
@@ -684,10 +757,20 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
             parse_mode="Markdown",
         )
+
+        # also send ICS to client so they can add to calendar
+        if ics_path is not None:
+            with open(ics_path, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=user_id,
+                    document=f,
+                    filename="invalid8th_booking.ics",
+                    caption="Tap this to add the booking to your calendar 📅",
+                )
     except Exception as e:
         logger.warning(f"Failed to message client in /confirm: {e}")
 
-    # tell admin
+    # tell admin + send ICS for your iPhone
     await update.message.reply_text(
         "✅ Booking confirmed.\n"
         f"User ID: {user_id}\n"
@@ -697,6 +780,19 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Total paid: £{total}"
     )
 
+    if ics_path is not None:
+        try:
+            with open(ics_path, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=f,
+                    filename=os.path.basename(ics_path),
+                    caption="Tap this to add the booking to your calendar 📅",
+                )
+        except Exception as e:
+            logger.warning(f"Failed to send ICS to admin: {e}")
+
+ 
 
 async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """User sends payment screenshot – forward to admin if awaiting_payment."""
