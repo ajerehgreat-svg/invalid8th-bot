@@ -51,13 +51,14 @@ logger = logging.getLogger("Invalid8thBot")
 # Conversation states
 (
     BOOK_NAME,
+    BOOK_IG,
     BOOK_DATE,
     BOOK_TIME,
     BOOK_LOCATION,
     BOOK_TYPE,
     LIFESTYLE_HOURS,
     MATCHDAY_PLAYERS,
-) = range(7)
+) = range(8)
 
 # In-memory bookings: {user_id: booking_dict}
 BOOKINGS = {}
@@ -123,7 +124,6 @@ def check_time_spacing(start_dt: datetime, end_dt: datetime, other_bookings: lis
             continue
 
         # If not overlapping, measure closest gap
-        # gap is time between end of earlier and start of later
         if end_dt <= b_start:
             gap_seconds = (b_start - end_dt).total_seconds()
         elif start_dt >= b_end:
@@ -154,6 +154,7 @@ def save_booking_to_csv(booking: dict):
             f"{booking.get('user_id')},"
             f"{booking.get('username')},"
             f"{booking.get('name')},"
+            f"{booking.get('instagram')},"
             f"{booking.get('date')},"
             f"{booking.get('time')},"
             f"{booking.get('location')},"
@@ -189,35 +190,49 @@ def main_menu_keyboard():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "Welcome to Invalid8th Assistant 🤖\n\n"
-        "• 📸 Lifestyle & Matchday shoot bookings\n"
-        "• ℹ️ FAQs\n\n"
-        "Tap a button to begin."
+        "Welcome to the Invalid8th Elite Assistant 🤖\n\n"
+        "How to get started:\n"
+        "• Tap *📸 Book a Shoot* to book Lifestyle or Matchday content\n"
+        "• Tap *ℹ️ FAQs* to see pricing & info\n\n"
+        "Key commands:\n"
+        "• /start – main menu\n"
+        "• /book – start a booking\n"
+        "• /faqs – pricing & info\n"
+        "• /help – show commands\n\n"
+        "_If you're an Invalid8th member, use your main Instagram handle so we can verify you._"
     )
     if update.message:
-        await update.message.reply_text(text, reply_markup=main_menu_keyboard())
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
     else:
-        await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "/start – menu\n"
-        "/book – book a lifestyle or matchday shoot\n"
-        "/faqs – FAQs\n"
-        "/help – this help\n"
-        "/travel – (admin only) set travel fee for a booking"
+        "Commands:\n"
+        "• /start – main menu\n"
+        "• /book – book a lifestyle or matchday shoot\n"
+        "• /faqs – FAQs & pricing\n"
+        "• /help – this help message\n",
+        parse_mode="Markdown"
     )
 
 
 async def faqs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "ℹ️ *FAQs*\n"
-        "• Shoots: London & nationwide\n"
-        "• Turnaround: 48–72h\n"
-        "• Lifestyle: £150 for 1h, £100/h for 2h+ (excl. travel)\n"
-        "• Matchday: £300 up to 3 players, £100 each for 4+ (excl. travel)\n"
-        "• Payment: upfront to secure slot\n"
+        "ℹ️ *Invalid8th FAQs*\n\n"
+        "*Lifestyle Shoots*\n"
+        "• £150 for 1 hour\n"
+        "• £100 per hour for 2+ hours\n"
+        "(*Travel fee added depending on location*)\n\n"
+        "*Matchday Shoots*\n"
+        "• £300 total for up to 3 players (same team)\n"
+        "• £100 per player for 4+ players (same team)\n"
+        "(*Travel fee added depending on location*)\n\n"
+        "*General*\n"
+        "• Shoots: London & nationwide (UK)\n"
+        "• Turnaround: 48–72 hours\n"
+        "• Payment: upfront to secure your slot\n"
         "• Contact: @invalid8th | ajerehgreat@gmail.com"
     )
     if update.callback_query:
@@ -247,7 +262,22 @@ async def book_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def book_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["book_name"] = update.message.text.strip()
     await update.message.reply_text(
-        "Date? *(e.g., 24 Nov 2025 or 24/11/2025)*", parse_mode="Markdown"
+        "What’s your *Instagram handle*? (e.g. @invalid8th)\n"
+        "_We use this to verify members & keep things secure._",
+        parse_mode="Markdown",
+    )
+    return BOOK_IG
+
+
+async def book_ig(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ig = update.message.text.strip()
+    # normalise a bit
+    if not ig.startswith("@"):
+        ig = "@" + ig
+    context.user_data["book_ig"] = ig
+
+    await update.message.reply_text(
+        "Date of the shoot? *(e.g., 24 Nov 2025 or 24/11/2025)*", parse_mode="Markdown"
     )
     return BOOK_DATE
 
@@ -266,7 +296,7 @@ async def book_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["book_date_text"] = date_text
     context.user_data["book_date"] = parsed_date.isoformat()
     await update.message.reply_text(
-        "What *time* is the shoot? *(e.g., 14:30)*", parse_mode="Markdown"
+        "What *time* is the shoot? *(24h format, e.g., 14:30 or 09:00)*", parse_mode="Markdown"
     )
     return BOOK_TIME
 
@@ -361,6 +391,7 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "user_id": user_id,
         "username": user.username,
         "name": context.user_data.get("book_name"),
+        "instagram": context.user_data.get("book_ig"),
         "date": context.user_data.get("book_date_text"),
         "time": context.user_data.get("book_time_text"),
         "location": context.user_data.get("book_location"),
@@ -384,24 +415,25 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if spacing["overlap"]:
         conflict_note = (
             "\n\n⚠️ _This time clashes with another booking._ "
-            "I'll confirm manually and may need to adjust your time."
+            "We'll confirm manually and may need to adjust your time."
         )
     elif spacing["close_gap"]:
         conflict_note = (
             "\n\n⚠️ _This is quite close to another booking._ "
-            "I'll confirm manually and let you know if timing works."
+            "We'll confirm manually and let you know if timing works."
         )
 
     await update.message.reply_text(
         "Lifestyle Shoot – Summary\n"
         f"• Name: {booking['name']}\n"
+        f"• Instagram: {booking['instagram']}\n"
         f"• Date: {booking['date']}\n"
         f"• Time: {booking['time']}\n"
         f"• Location: {booking['location']}\n"
         f"• Hours: {booking['hours']}\n"
-        f"• Base shoot fee (no travel): £{booking['base_price']}\n"
-        f"{'Travel fee depends on your location.'}"
-        "\nI’ll confirm the travel fee and send you the *final total to pay* here."
+        f"• Base shoot fee (no travel): £{booking['base_price']}\n\n"
+        "Travel fee depends on your location.\n"
+        "We’ll confirm the travel fee and send you the *final total to pay* here."
         f"{conflict_note}",
         parse_mode="Markdown",
     )
@@ -421,6 +453,7 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "NEW LIFESTYLE BOOKING 🔔\n"
                     f"From: @{user.username or user.full_name} (ID: {user_id})\n"
                     f"Name: {booking['name']}\n"
+                    f"Instagram: {booking['instagram']}\n"
                     f"Date: {booking['date']}\n"
                     f"Time: {booking['time']}\n"
                     f"Location: {booking['location']}\n"
@@ -468,6 +501,7 @@ async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "user_id": user_id,
         "username": user.username,
         "name": context.user_data.get("book_name"),
+        "instagram": context.user_data.get("book_ig"),
         "date": context.user_data.get("book_date_text"),
         "time": context.user_data.get("book_time_text"),
         "location": context.user_data.get("book_location"),
@@ -490,24 +524,25 @@ async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if spacing["overlap"]:
         conflict_note = (
             "\n\n⚠️ _This time clashes with another booking._ "
-            "I'll confirm manually and may need to adjust your time."
+            "We'll confirm manually and may need to adjust your time."
         )
     elif spacing["close_gap"]:
         conflict_note = (
             "\n\n⚠️ _This is quite close to another booking._ "
-            "I'll confirm manually and let you know if timing works."
+            "We'll confirm manually and let you know if timing works."
         )
 
     await update.message.reply_text(
         "Matchday Shoot – Summary\n"
         f"• Name: {booking['name']}\n"
+        f"• Instagram: {booking['instagram']}\n"
         f"• Date: {booking['date']}\n"
         f"• Time: {booking['time']}\n"
         f"• Location: {booking['location']}\n"
         f"• Players: {booking['players']}\n"
-        f"• Base shoot fee (no travel): £{booking['base_price']}\n"
+        f"• Base shoot fee (no travel): £{booking['base_price']}\n\n"
         "Travel fee depends on your location.\n"
-        "I’ll confirm the travel fee and send you the *final total to pay* here."
+        "We’ll confirm the travel fee and send you the *final total to pay* here."
         f"{conflict_note}",
         parse_mode="Markdown",
     )
@@ -527,154 +562,10 @@ async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "NEW MATCHDAY BOOKING 🔔\n"
                     f"From: @{user.username or user.full_name} (ID: {user_id})\n"
                     f"Name: {booking['name']}\n"
+                    f"Instagram: {booking['instagram']}\n"
                     f"Date: {booking['date']}\n"
                     f"Time: {booking['time']}\n"
                     f"Location: {booking['location']}\n"
                     f"Players: {booking['players']}\n"
                     f"Base fee (no travel): £{booking['base_price']}\n"
-                    f"{clash_text}\n"
-                    "Set travel fee with:\n"
-                    f"/travel {user_id} <amount>"
-                ),
-            )
-        except Exception as e:
-            logger.warning(f"Admin notify failed (matchday): {e}")
-
-    return ConversationHandler.END
-
-
-# ----------------------- ADMIN: SET TRAVEL & CONFIRM ----------------------- #
-
-async def set_travel_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command: /travel <user_id> <amount>"""
-    if ADMIN_CHAT_ID is None:
-        await update.message.reply_text("ADMIN_CHAT_ID is not configured.")
-        return
-
-    if update.effective_chat.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("You are not allowed to use this command.")
-        return
-
-    if len(context.args) != 2:
-        await update.message.reply_text("Use: /travel <user_id> <amount>")
-        return
-
-    try:
-        user_id = int(context.args[0])
-        travel_fee = int(context.args[1])
-    except ValueError:
-        await update.message.reply_text("Both user_id and amount must be numbers.")
-        return
-
-    booking = BOOKINGS.get(user_id)
-    if not booking:
-        await update.message.reply_text("No active booking found for that user.")
-        return
-
-    booking["travel_fee"] = travel_fee
-
-    # Check against already-confirmed bookings only
-    spacing = check_time_spacing(
-        booking["start_dt"], booking["end_dt"], CONFIRMED_BOOKINGS
-    )
-    warning_lines = []
-    if spacing["overlap"]:
-        warning_lines.append("⚠️ WARNING: This overlaps with an existing confirmed booking.")
-    elif spacing["close_gap"]:
-        warning_lines.append("ℹ️ Note: This is less than 3 hours from another confirmed booking.")
-
-    total = booking["base_price"] + travel_fee
-
-    # Message to client
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=(
-                "Final price confirmed ✅\n"
-                f"• Shoot fee: £{booking['base_price']}\n"
-                f"• Travel: £{travel_fee}\n\n"
-                f"**Total to pay: £{total}**\n\n"
-                "Please send payment to:\n"
-                "Name: YOUR NAME HERE\n"
-                "Sort Code: XX-XX-XX\n"
-                "Account: XXXXXXXXX\n\n"
-                "Your slot is *not* locked in until payment is made.",
-            ),
-            parse_mode="Markdown",
-        )
-    except Exception as e:
-        logger.warning(f"Failed to message client in /travel: {e}")
-        await update.message.reply_text("Could not message the client, but fee was set.")
-
-    # Save to CSV + confirmed list
-    save_booking_to_csv(booking)
-
-    # Confirm to admin
-    warn_text = ("\n".join(warning_lines) + "\n") if warning_lines else ""
-    await update.message.reply_text(
-        f"{warn_text}"
-        f"Travel fee set to £{travel_fee} for user {user_id}. Total: £{total}."
-    )
-
-
-# ----------------------- BUTTON ROUTER (MENU) ----------------------- #
-
-async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    data = q.data
-
-    if data == "book_shoot":
-        return await book_entry(update, context)
-    elif data == "faqs":
-        return await faqs(update, context)
-
-    await q.answer()
-    await q.edit_message_text("Unknown action.", reply_markup=main_menu_keyboard())
-
-
-# ----------------------- APP SETUP ----------------------- #
-
-def build_app() -> Application:
-    if not TOKEN:
-        raise RuntimeError("Missing TELEGRAM_TOKEN env var.")
-    app = Application.builder().token(TOKEN).build()
-
-    # Commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("faqs", faqs))
-    app.add_handler(CommandHandler("travel", set_travel_fee))
-
-    # Main menu buttons
-    app.add_handler(CallbackQueryHandler(button_router, pattern="^(book_shoot|faqs)$"))
-
-    # Booking conversation (command + button)
-    book_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("book", book_entry),
-            CallbackQueryHandler(book_entry, pattern="^book_shoot$"),
-        ],
-        states={
-            BOOK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_name)],
-            BOOK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_date)],
-            BOOK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_time)],
-            BOOK_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_location)],
-            BOOK_TYPE: [CallbackQueryHandler(book_type, pattern="^type_(lifestyle|matchday)$")],
-            LIFESTYLE_HOURS: [MessageHandler(filters.TEXT & ~filters.COMMAND, lifestyle_hours)],
-            MATCHDAY_PLAYERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, matchday_players)],
-        },
-        fallbacks=[CommandHandler("start", start)],
-        allow_reentry=True,
-    )
-    app.add_handler(book_conv)
-
-    return app
-
-
-def main():
-    app = build_app()
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
-if __name__ == "__main__":
-    main()
+                    f"{clash_t_
