@@ -359,7 +359,6 @@ async def book_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text("Unknown choice. Please /book again.")
     return ConversationHandler.END
 
-
 async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -439,7 +438,7 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     # Notify admin
-  if ADMIN_CHAT_ID:
+    if ADMIN_CHAT_ID:
         try:
             clash_text = ""
             if spacing["overlap"]:
@@ -468,6 +467,7 @@ async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Admin notify failed (lifestyle): {e}")
 
     return ConversationHandler.END
+
 
 
 async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
