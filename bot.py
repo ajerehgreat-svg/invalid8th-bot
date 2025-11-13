@@ -171,21 +171,26 @@ def _escape_ics_text(text: str) -> str:
     )
 
 
-def _ics_datetime(dt: datetime) -> str:
-    """Format datetime as YYYYMMDDTHHMMSS for ICS (floating local time)."""
+def _ics_local_datetime(dt: datetime) -> str:
+    """
+    Format a local datetime as YYYYMMDDTHHMMSS (no Z).
+    iPhone handles local time fine when we also give TZID.
+    """
     return dt.strftime("%Y%m%dT%H%M%S")
 
 
 def generate_ics_for_booking(booking: dict) -> str:
-    """Create ICS content for a single booking."""
+    """
+    Create ICS content for a single booking, compatible with iPhone Calendar.
+    """
     start_dt = booking.get("start_dt")
     end_dt = booking.get("end_dt")
 
     if not start_dt or not end_dt:
         return ""
 
-    uid = f"{booking.get('user_id')}-{_ics_datetime(start_dt)}@invalid8th"
-    dtstamp = _ics_datetime(datetime.utcnow())
+    uid = f"{booking.get('user_id')}-{_ics_local_datetime(start_dt)}@invalid8th"
+    dtstamp = _ics_local_datetime(datetime.utcnow())
 
     summary = f"Invalid8th {booking.get('type', '').title()} Shoot"
     location = _escape_ics_text(booking.get("location", ""))
@@ -203,22 +208,28 @@ def generate_ics_for_booking(booking: dict) -> str:
 
     description = _escape_ics_text("\n".join(description_lines))
 
-    ics = (
-        "BEGIN:VCALENDAR\n"
-        "VERSION:2.0\n"
-        "PRODID:-//Invalid8th//Booking Bot//EN\n"
-        "BEGIN:VEVENT\n"
-        f"UID:{uid}\n"
-        f"DTSTAMP:{dtstamp}\n"
-        f"DTSTART:{_ics_datetime(start_dt)}\n"
-        f"DTEND:{_ics_datetime(end_dt)}\n"
-        f"SUMMARY:{_escape_ics_text(summary)}\n"
-        f"LOCATION:{location}\n"
-        f"DESCRIPTION:{description}\n"
-        "END:VEVENT\n"
-        "END:VCALENDAR\n"
-    )
-    return ics
+    # IMPORTANT: use \r\n for ICS, add CALSCALE + METHOD, and TZID for iPhone
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Invalid8th//Booking Bot//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "BEGIN:VEVENT",
+        f"UID:{uid}",
+        f"DTSTAMP:{dtstamp}",
+        f"DTSTART;TZID=Europe/London:{_ics_local_datetime(start_dt)}",
+        f"DTEND;TZID=Europe/London:{_ics_local_datetime(end_dt)}",
+        f"SUMMARY:{_escape_ics_text(summary)}",
+        f"LOCATION:{location}",
+        f"DESCRIPTION:{description}",
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ]
+
+    # iPhone is fussy about CRLF line endings
+    return "\r\n".join(lines) + "\r\n"
+
 
 
 def main_menu_keyboard():
