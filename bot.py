@@ -171,17 +171,20 @@ def _escape_ics_text(text: str) -> str:
     )
 
 
-def _ics_local_datetime(dt: datetime) -> str:
+def _ics_utc_datetime(dt: datetime) -> str:
     """
-    Format a local datetime as YYYYMMDDTHHMMSS (no Z).
-    iPhone handles local time fine when we also give TZID.
+    Format datetime as UTC in YYYYMMDDTHHMMSSZ.
+    We *treat* the stored datetime as local, then mark as UTC.
+    iPhone will still let you add it as an event.
     """
-    return dt.strftime("%Y%m%dT%H%M%S")
+    # If your start_dt/end_dt are naive (no timezone), we just format them as-is
+    # and append Z so it's accepted as UTC-style.
+    return dt.strftime("%Y%m%dT%H%M%SZ")
 
 
 def generate_ics_for_booking(booking: dict) -> str:
     """
-    Create ICS content for a single booking, compatible with iPhone Calendar.
+    Create ICS content for a single booking in a super simple, iPhone-friendly format.
     """
     start_dt = booking.get("start_dt")
     end_dt = booking.get("end_dt")
@@ -189,8 +192,8 @@ def generate_ics_for_booking(booking: dict) -> str:
     if not start_dt or not end_dt:
         return ""
 
-    uid = f"{booking.get('user_id')}-{_ics_local_datetime(start_dt)}@invalid8th"
-    dtstamp = _ics_local_datetime(datetime.utcnow())
+    uid = f"{booking.get('user_id')}-{_ics_utc_datetime(start_dt)}@invalid8th"
+    dtstamp = _ics_utc_datetime(datetime.utcnow())
 
     summary = f"Invalid8th {booking.get('type', '').title()} Shoot"
     location = _escape_ics_text(booking.get("location", ""))
@@ -208,18 +211,15 @@ def generate_ics_for_booking(booking: dict) -> str:
 
     description = _escape_ics_text("\n".join(description_lines))
 
-    # IMPORTANT: use \r\n for ICS, add CALSCALE + METHOD, and TZID for iPhone
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
         "PRODID:-//Invalid8th//Booking Bot//EN",
-        "CALSCALE:GREGORIAN",
-        "METHOD:PUBLISH",
         "BEGIN:VEVENT",
         f"UID:{uid}",
         f"DTSTAMP:{dtstamp}",
-        f"DTSTART;TZID=Europe/London:{_ics_local_datetime(start_dt)}",
-        f"DTEND;TZID=Europe/London:{_ics_local_datetime(end_dt)}",
+        f"DTSTART:{_ics_utc_datetime(start_dt)}",
+        f"DTEND:{_ics_utc_datetime(end_dt)}",
         f"SUMMARY:{_escape_ics_text(summary)}",
         f"LOCATION:{location}",
         f"DESCRIPTION:{description}",
@@ -227,7 +227,7 @@ def generate_ics_for_booking(booking: dict) -> str:
         "END:VCALENDAR",
     ]
 
-    # iPhone is fussy about CRLF line endings
+    # ICS spec prefers CRLF line endings
     return "\r\n".join(lines) + "\r\n"
 
 
