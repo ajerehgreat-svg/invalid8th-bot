@@ -513,23 +513,22 @@ async def set_travel_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif spacing["close_gap"]:
         warning_lines.append("ℹ️ Note: This is less than 3 hours from another confirmed booking.")
     total = booking["base_price"] + travel_fee
-       try:
+    try:
         await context.bot.send_message(
             chat_id=user_id,
             text=(
                 "Final price confirmed ✅\n"
                 f"• Shoot fee: £{booking['base_price']}\n"
                 f"• Travel: £{travel_fee}\n\n"
-                f"**Total to pay: £{total}**\n\n"
+                f"Total to pay: £{total}\n\n"
                 "Please send payment to:\n"
-                "Name: GREAT AJEREH\n"
-                "Sort Code: 04-29-09\n"
-                "Account: 91568455\n\n"
-                "Your slot is *not* locked in until payment is made.",
+                "Name: Great Ajereh\n"
+                "Sort Code: 12-34-56\n"
+                "Account: 12345678\n\n"
+                "Your slot is not locked in until payment is made."
             ),
             parse_mode="Markdown",
         )
-
     except Exception as e:
         logger.warning(f"Failed to message client in /travel: {e}")
         await update.message.reply_text("Could not message the client, but fee was set.")
@@ -539,18 +538,6 @@ async def set_travel_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{warn_text}"
         f"Travel fee set to £{travel_fee} for user {user_id}. Total: £{total}."
     )
-
-# ---------- BUTTON ROUTER ---------- #
-
-async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    data = q.data
-    if data == "book_shoot":
-        return await book_entry(update, context)
-    elif data == "faqs":
-        return await faqs(update, context)
-    await q.answer()
-    await q.edit_message_text("Unknown action.", reply_markup=main_menu_keyboard())
 
 # ---------- APP SETUP ---------- #
 
@@ -562,7 +549,9 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("faqs", faqs))
     app.add_handler(CommandHandler("travel", set_travel_fee))
-    app.add_handler(CallbackQueryHandler(button_router, pattern="^(book_shoot|faqs)$"))
+    # FAQ button
+    app.add_handler(CallbackQueryHandler(faqs, pattern="^faqs$"))
+    # Booking conversation (handles /book and the 📸 button)
     book_conv = ConversationHandler(
         entry_points=[
             CommandHandler("book", book_entry),
