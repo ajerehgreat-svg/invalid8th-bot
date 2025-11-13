@@ -1,4 +1,3 @@
-
 import os
 import logging
 from datetime import datetime
@@ -11,13 +10,8 @@ class Health(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
-class Health(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
 
-    def do_HEAD(self):  # 👈 Add this new method
+    def do_HEAD(self):  # healthcheck for HEAD requests too
         self.send_response(200)
         self.end_headers()
 
@@ -41,32 +35,45 @@ from telegram.ext import (
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
+# convert ADMIN_CHAT_ID to int if present
+if ADMIN_CHAT_ID:
+    try:
+        ADMIN_CHAT_ID = int(ADMIN_CHAT_ID)
+    except ValueError:
+        ADMIN_CHAT_ID = None
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger("Invalid8thBot")
 
+# Conversation states
 (
-    BOOK_NAME, BOOK_DATE, BOOK_LOCATION, BOOK_PACKAGE, BOOK_CONFIRM,
-    R2R_AREA, R2R_BUDGET, R2R_STRATEGY, R2R_CONTACT, R2R_CONFIRM
-) = range(10)
+    BOOK_NAME,
+    BOOK_DATE,
+    BOOK_LOCATION,
+    BOOK_TYPE,
+    LIFESTYLE_HOURS,
+    MATCHDAY_PLAYERS,
+) = range(6)
+
+# In-memory bookings: {user_id: booking_dict}
+BOOKINGS = {}
+
 
 def main_menu_keyboard():
     buttons = [
         [InlineKeyboardButton("📸 Book a Shoot", callback_data="book_shoot")],
-        [InlineKeyboardButton("👑 Membership", callback_data="membership")],
-        [InlineKeyboardButton("🏠 R2R / Airbnb Lead", callback_data="r2r")],
         [InlineKeyboardButton("ℹ️ FAQs", callback_data="faqs")],
     ]
     return InlineKeyboardMarkup(buttons)
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "Welcome to Invalid8th Assistant 🤖\n\n"
-        "• 📸 Shoot bookings\n"
-        "• 👑 Membership info\n"
-        "• 🏠 R2R / Airbnb leads\n"
+        "• 📸 Lifestyle & Matchday shoot bookings\n"
         "• ℹ️ FAQs\n\n"
         "Tap a button to begin."
     )
@@ -75,209 +82,371 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
 
+
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "/start – menu\n/book – book a shoot\n/r2r – R2R lead\n/membership – membership info\n/help – help"
+        "/start – menu\n"
+        "/book – book a lifestyle or matchday shoot\n"
+        "/faqs – FAQs\n"
+        "/help – this help\n"
+        "/travel – (admin only) set travel fee for a booking"
     )
 
-async def membership_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "👑 *Invalid8th Lifestyle Membership*\n"
-        "• Basic – £100/mo: priority bookings, 10% off.\n"
-        "• Premium – £500/mo: quarterly styled shoot, concierge, 20% off.\n"
-        "• Elite – £1,000–1,500/mo: concierge, private dinners, airport bookings, free monthly shoot.\n"
-        "_DM @invalid8th to upgrade._"
-    )
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
-    else:
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 async def faqs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "ℹ️ *FAQs*\n"
         "• Shoots: London & nationwide\n"
         "• Turnaround: 48–72h\n"
-        "• Payment: 50% deposit\n"
+        "• Lifestyle: £150 for 1h, £100/h for 2h+ (excl. travel)\n"
+        "• Matchday: £300 up to 3 players, £100 each for 4+ (excl. travel)\n"
+        "• Payment: upfront to secure slot\n"
         "• Contact: @invalid8th | ajerehgreat@gmail.com"
     )
-    await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text, parse_mode="Markdown", reply_markup=main_menu_keyboard()
+        )
+    else:
+        await update.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=main_menu_keyboard()
+        )
 
-# Booking flow
+
+# ----------------------- BOOKING FLOW ----------------------- #
+
 async def book_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for booking – ask for name."""
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text("📸 Your *full name*?", parse_mode="Markdown")
+        await update.callback_query.edit_message_text(
+            "📸 Your *full name*?", parse_mode="Markdown"
+        )
     else:
         await update.message.reply_text("📸 Your *full name*?", parse_mode="Markdown")
     return BOOK_NAME
 
+
 async def book_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["book_name"] = update.message.text.strip()
-    await update.message.reply_text("Date? *(e.g., 24 Nov 2025)*", parse_mode="Markdown")
+    await update.message.reply_text(
+        "Date? *(e.g., 24 Nov 2025)*", parse_mode="Markdown"
+    )
     return BOOK_DATE
+
 
 async def book_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["book_date"] = update.message.text.strip()
-    await update.message.reply_text("Location? *(area or exact address)*", parse_mode="Markdown")
+    await update.message.reply_text(
+        "Location? *(area or exact address)*", parse_mode="Markdown"
+    )
     return BOOK_LOCATION
+
 
 async def book_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["book_location"] = update.message.text.strip()
+
     buttons = [
-        [InlineKeyboardButton("Lifestyle", callback_data="pkg_lifestyle"),
-         InlineKeyboardButton("Concert", callback_data="pkg_concert")],
-        [InlineKeyboardButton("Football/Matchday", callback_data="pkg_football"),
-         InlineKeyboardButton("Studio", callback_data="pkg_studio")]
+        [
+            InlineKeyboardButton("Lifestyle", callback_data="type_lifestyle"),
+            InlineKeyboardButton("Matchday", callback_data="type_matchday"),
+        ]
     ]
-    await update.message.reply_text("Choose *package*:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
-    return BOOK_PACKAGE
-
-async def book_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    context.user_data["book_package"] = q.data.replace("pkg_", "").title()
-    summary = (
-        f"Confirm booking:\n"
-        f"• Name: {context.user_data['book_name']}\n"
-        f"• Date: {context.user_data['book_date']}\n"
-        f"• Location: {context.user_data['book_location']}\n"
-        f"• Package: {context.user_data['book_package']}"
+    await update.message.reply_text(
+        "What *type of shoot* is this?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
-    buttons = [[InlineKeyboardButton("✅ Confirm", callback_data="book_confirm"),
-                InlineKeyboardButton("❌ Cancel", callback_data="book_cancel")]]
-    await q.edit_message_text(summary, reply_markup=InlineKeyboardMarkup(buttons))
-    return BOOK_CONFIRM
+    return BOOK_TYPE
 
-async def book_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def book_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    if q.data != "book_confirm":
-        await q.edit_message_text("Cancelled.", reply_markup=main_menu_keyboard())
-        return ConversationHandler.END
-    os.makedirs("data", exist_ok=True)
-    from datetime import datetime
-    line = f"{datetime.utcnow().isoformat()},{context.user_data.get('book_name')},{context.user_data.get('book_date')},{context.user_data.get('book_location')},{context.user_data.get('book_package')}\n"
-    with open("data/bookings.csv", "a", encoding="utf-8") as f:
-        f.write(line)
-    if ADMIN_CHAT_ID:
-        try:
-            await context.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=f"📸 New booking:\n{line}")
-        except Exception as e:
-            logger.warning(f"Admin notify failed: {e}")
-    await q.edit_message_text("🔥 Booking received! We'll confirm within 24h.", reply_markup=main_menu_keyboard())
+    choice = q.data
+
+    if choice == "type_lifestyle":
+        context.user_data["shoot_type"] = "lifestyle"
+        await q.edit_message_text("How many *hours* do you want to book?", parse_mode="Markdown")
+        return LIFESTYLE_HOURS
+
+    elif choice == "type_matchday":
+        context.user_data["shoot_type"] = "matchday"
+        await q.edit_message_text(
+            "How many *players* from the same team?", parse_mode="Markdown"
+        )
+        return MATCHDAY_PLAYERS
+
+    await q.edit_message_text("Unknown choice. Please /book again.")
     return ConversationHandler.END
 
-# R2R flow
-async def r2r_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text("🏠 Which *area/postcode* is this in?", parse_mode="Markdown")
-    return R2R_AREA
 
-async def r2r_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["r2r_area"] = update.message.text.strip()
-    await update.message.reply_text("Budget (monthly rent) & est. nightly rate? *(e.g., £2,000 / £130)*", parse_mode="Markdown")
-    return R2R_BUDGET
+async def lifestyle_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    text = update.message.text.strip()
 
-async def r2r_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["r2r_budget"] = update.message.text.strip()
-    await update.message.reply_text("Strategy? *(SA whole unit / contractor stays / HMO)*", parse_mode="Markdown")
-    return R2R_STRATEGY
+    try:
+        hours = int(text)
+        if hours <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(
+            "Please send a valid number of hours (e.g. 1, 2, 3)."
+        )
+        return LIFESTYLE_HOURS
 
-async def r2r_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["r2r_strategy"] = update.message.text.strip()
-    await update.message.reply_text("Your contact *(email or @handle)*?", parse_mode="Markdown")
-    return R2R_CONTACT
+    # Pricing: £150 if <2h (1h), otherwise £100/h
+    if hours < 2:
+        base_price = 150
+    else:
+        base_price = hours * 100
 
-async def r2r_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["r2r_contact"] = update.message.text.strip()
-    summary = (
-        "Confirm R2R lead:\n"
-        f"• Area: {context.user_data['r2r_area']}\n"
-        f"• Budget/Rates: {context.user_data['r2r_budget']}\n"
-        f"• Strategy: {context.user_data['r2r_strategy']}\n"
-        f"• Contact: {context.user_data['r2r_contact']}"
-    )
-    buttons = [[InlineKeyboardButton("✅ Submit", callback_data="r2r_submit"),
-                InlineKeyboardButton("❌ Cancel", callback_data="r2r_cancel")]]
-    await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(buttons))
-    return R2R_CONFIRM
-
-async def r2r_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data != "r2r_submit":
-        await q.edit_message_text("Cancelled.", reply_markup=main_menu_keyboard())
-        return ConversationHandler.END
-    os.makedirs("data", exist_ok=True)
-    from datetime import datetime
-    line = f"{datetime.utcnow().isoformat()},{context.user_data.get('r2r_area')},{context.user_data.get('r2r_budget')},{context.user_data.get('r2r_strategy')},{context.user_data.get('r2r_contact')}\n"
-    with open("data/r2r_leads.csv", "a", encoding="utf-8") as f:
-        f.write(line)
-    if ADMIN_CHAT_ID:
-        try:
-            await context.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=f"🏠 New R2R lead:\n{line}")
-        except Exception as e:
-            logger.warning(f"Admin notify failed: {e}")
-    await q.edit_message_text("✅ Lead submitted. We'll review and get back to you.", reply_markup=main_menu_keyboard())
-    return ConversationHandler.END
-
-async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    mapping = {
-        "book_shoot": book_entry,
-        "membership": membership_info,
-        "faqs": faqs,
-        "r2r": r2r_entry,
+    booking = {
+        "user_id": user_id,
+        "username": user.username,
+        "name": context.user_data.get("book_name"),
+        "date": context.user_data.get("book_date"),
+        "location": context.user_data.get("book_location"),
+        "type": "lifestyle",
+        "hours": hours,
+        "players": None,
+        "base_price": base_price,
+        "travel_fee": None,
     }
-    handler = mapping.get(q.data)
-    if handler:
-        return await handler(update, context)
-    await q.answer()
-    await q.edit_message_text("Unknown action.", reply_markup=main_menu_keyboard())
+    BOOKINGS[user_id] = booking
+
+    await update.message.reply_text(
+        "Lifestyle Shoot – Summary\n"
+        f"• Name: {booking['name']}\n"
+        f"• Date: {booking['date']}\n"
+        f"• Location: {booking['location']}\n"
+        f"• Hours: {booking['hours']}\n"
+        f"• Base shoot fee (no travel): £{booking['base_price']}\n\n"
+        "Travel fee depends on your location.\n"
+        "I’ll confirm the travel fee and send you the *final total to pay* here.",
+        parse_mode="Markdown",
+    )
+
+    # Notify admin
+    if ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=(
+                    "NEW LIFESTYLE BOOKING 🔔\n"
+                    f"From: @{user.username or user.full_name} (ID: {user_id})\n"
+                    f"Name: {booking['name']}\n"
+                    f"Date: {booking['date']}\n"
+                    f"Location: {booking['location']}\n"
+                    f"Hours: {booking['hours']}\n"
+                    f"Base fee (no travel): £{booking['base_price']}\n\n"
+                    "Set travel fee with:\n"
+                    f"/travel {user_id} <amount>"
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"Admin notify failed (lifestyle): {e}")
+
+    return ConversationHandler.END
+
+
+async def matchday_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    text = update.message.text.strip()
+
+    try:
+        players = int(text)
+        if players <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(
+            "Please send a valid number of players (e.g. 1, 2, 3)."
+        )
+        return MATCHDAY_PLAYERS
+
+    # Pricing: £300 total for 1–3 players, £100 each for 4+
+    if players <= 3:
+        base_price = 300
+    else:
+        base_price = players * 100
+
+    booking = {
+        "user_id": user_id,
+        "username": user.username,
+        "name": context.user_data.get("book_name"),
+        "date": context.user_data.get("book_date"),
+        "location": context.user_data.get("book_location"),
+        "type": "matchday",
+        "hours": None,
+        "players": players,
+        "base_price": base_price,
+        "travel_fee": None,
+    }
+    BOOKINGS[user_id] = booking
+
+    await update.message.reply_text(
+        "Matchday Shoot – Summary\n"
+        f"• Name: {booking['name']}\n"
+        f"• Date: {booking['date']}\n"
+        f"• Location: {booking['location']}\n"
+        f"• Players: {booking['players']}\n"
+        f"• Base shoot fee (no travel): £{booking['base_price']}\n\n"
+        "Travel fee depends on your location.\n"
+        "I’ll confirm the travel fee and send you the *final total to pay* here.",
+        parse_mode="Markdown",
+    )
+
+    # Notify admin
+    if ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=(
+                    "NEW MATCHDAY BOOKING 🔔\n"
+                    f"From: @{user.username or user.full_name} (ID: {user_id})\n"
+                    f"Name: {booking['name']}\n"
+                    f"Date: {booking['date']}\n"
+                    f"Location: {booking['location']}\n"
+                    f"Players: {booking['players']}\n"
+                    f"Base fee (no travel): £{booking['base_price']}\n\n"
+                    "Set travel fee with:\n"
+                    f"/travel {user_id} <amount>"
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"Admin notify failed (matchday): {e}")
+
+    return ConversationHandler.END
+
+
+def save_booking_to_csv(booking: dict):
+    """Save finalised booking (with travel fee) to CSV."""
+    try:
+        os.makedirs("data", exist_ok=True)
+        total = booking["base_price"] + (booking.get("travel_fee") or 0)
+        line = (
+            f"{datetime.utcnow().isoformat()},"
+            f"{booking.get('user_id')},"
+            f"{booking.get('username')},"
+            f"{booking.get('name')},"
+            f"{booking.get('date')},"
+            f"{booking.get('location')},"
+            f"{booking.get('type')},"
+            f"{booking.get('hours')},"
+            f"{booking.get('players')},"
+            f"{booking.get('base_price')},"
+            f"{booking.get('travel_fee')},"
+            f"{total}\n"
+        )
+        with open("data/bookings.csv", "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as e:
+        logger.warning(f"Failed to save booking CSV: {e}")
+
+
+async def set_travel_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command: /travel <user_id> <amount>"""
+    if ADMIN_CHAT_ID is None:
+        await update.message.reply_text("ADMIN_CHAT_ID is not configured.")
+        return
+
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("You are not allowed to use this command.")
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text("Use: /travel <user_id> <amount>")
+        return
+
+    try:
+        user_id = int(context.args[0])
+        travel_fee = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("Both user_id and amount must be numbers.")
+        return
+
+    booking = BOOKINGS.get(user_id)
+    if not booking:
+        await update.message.reply_text("No active booking found for that user.")
+        return
+
+    booking["travel_fee"] = travel_fee
+    total = booking["base_price"] + travel_fee
+
+    # Message to client
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "Final price confirmed ✅\n"
+                f"• Shoot fee: £{booking['base_price']}\n"
+                f"• Travel: £{travel_fee}\n\n"
+                f"**Total to pay: £{total}**\n\n"
+                "Please send payment to:\n"
+                "Name: Great Ajereh\n"
+                "Sort Code: 04-29-09\n"
+                "Account: 91568455\n\n"
+                "Your slot is *not* locked in until payment is made.",
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to message client in /travel: {e}")
+        await update.message.reply_text("Could not message the client, but fee was set.")
+
+    # Save to CSV
+    save_booking_to_csv(booking)
+
+    # Confirm to admin
+    await update.message.reply_text(
+        f"Travel fee set to £{travel_fee} for user {user_id}. Total: £{total}."
+    )
+
+
+# ----------------------- APP SETUP ----------------------- #
 
 def build_app() -> Application:
     if not TOKEN:
         raise RuntimeError("Missing TELEGRAM_TOKEN env var.")
     app = Application.builder().token(TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("membership", membership_info))
-    app.add_handler(CallbackQueryHandler(button_router, pattern="^(book_shoot|membership|faqs|r2r)$"))
+    app.add_handler(CommandHandler("faqs", faqs))
+    app.add_handler(CommandHandler("travel", set_travel_fee))
 
+    # FAQs button
+    app.add_handler(CallbackQueryHandler(faqs, pattern="^faqs$"))
+
+    # Booking conversation (command + button)
     book_conv = ConversationHandler(
-        entry_points=[CommandHandler("book", book_entry)],
+        entry_points=[
+            CommandHandler("book", book_entry),
+            CallbackQueryHandler(book_entry, pattern="^book_shoot$"),
+        ],
         states={
             BOOK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_name)],
             BOOK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_date)],
             BOOK_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_location)],
-            BOOK_PACKAGE: [CallbackQueryHandler(book_package, pattern="^pkg_")],
-            BOOK_CONFIRM: [CallbackQueryHandler(book_confirm, pattern="^book_(confirm|cancel)$")]
+            BOOK_TYPE: [CallbackQueryHandler(book_type, pattern="^type_(lifestyle|matchday)$")],
+            LIFESTYLE_HOURS: [MessageHandler(filters.TEXT & ~filters.COMMAND, lifestyle_hours)],
+            MATCHDAY_PLAYERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, matchday_players)],
         },
         fallbacks=[CommandHandler("start", start)],
-        allow_reentry=True
+        allow_reentry=True,
     )
     app.add_handler(book_conv)
 
-    r2r_conv = ConversationHandler(
-        entry_points=[CommandHandler("r2r", r2r_entry)],
-        states={
-            R2R_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, r2r_area)],
-            R2R_BUDGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, r2r_budget)],
-            R2R_STRATEGY: [MessageHandler(filters.TEXT & ~filters.COMMAND, r2r_strategy)],
-            R2R_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, r2r_contact)],
-            R2R_CONFIRM: [CallbackQueryHandler(r2r_confirm, pattern="^r2r_(submit|cancel)$")]
-        },
-        fallbacks=[CommandHandler("start", start)],
-        allow_reentry=True
-    )
-    app.add_handler(r2r_conv)
     return app
+
 
 def main():
     app = build_app()
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
