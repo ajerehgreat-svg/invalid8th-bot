@@ -11,6 +11,15 @@ class Health(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
+class Health(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def do_HEAD(self):  # 👈 Add this new method
+        self.send_response(200)
+        self.end_headers()
 
 def start_healthcheck():
     port = int(os.getenv("PORT", "10000"))  # Render injects PORT automatically
