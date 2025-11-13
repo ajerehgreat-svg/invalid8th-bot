@@ -692,10 +692,8 @@ async def set_travel_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "When you’ve confirmed they’ve paid, run:\n"
         f"/confirm {user_id}"
     )
-
-
 async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: /confirm <user_id> – mark booking paid & confirmed."""
+    """Admin: /confirm <user_id> – mark booking paid & confirmed + send ICS to admin."""
     if ADMIN_CHAT_ID is None:
         await update.message.reply_text("ADMIN_CHAT_ID is not configured.")
         return
@@ -722,14 +720,15 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if booking.get("travel_fee") is None:
         await update.message.reply_text("Travel fee not set yet. Use /travel first.")
         return
+
     booking["status"] = "confirmed"
     save_booking_to_csv(booking)
-    # remove from pending
+    # remove from pending so only CONFIRMED_BOOKINGS hold it from now on
     del BOOKINGS[user_id]
 
     total = booking["base_price"] + (booking.get("travel_fee") or 0)
 
-    # --- create ICS file for calendar ---
+    # --- create ICS file for calendar (for admin only) ---
     ics_content = generate_ics_for_booking(booking)
     ics_path = None
     if ics_content:
@@ -742,7 +741,7 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning(f"Failed to write ICS file: {e}")
 
-    # tell client
+    # tell client – JUST TEXT, no ICS
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -757,20 +756,10 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
             parse_mode="Markdown",
         )
-
-        # also send ICS to client so they can add to calendar
-        if ics_path is not None:
-            with open(ics_path, "rb") as f:
-                await context.bot.send_document(
-                    chat_id=user_id,
-                    document=f,
-                    filename="invalid8th_booking.ics",
-                    caption="Tap this to add the booking to your calendar 📅",
-                )
     except Exception as e:
         logger.warning(f"Failed to message client in /confirm: {e}")
 
-    # tell admin + send ICS for your iPhone
+    # tell admin with text
     await update.message.reply_text(
         "✅ Booking confirmed.\n"
         f"User ID: {user_id}\n"
@@ -780,11 +769,12 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Total paid: £{total}"
     )
 
+    # send ICS file to admin so you can add to iPhone calendar
     if ics_path is not None:
         try:
             with open(ics_path, "rb") as f:
                 await context.bot.send_document(
-                    chat_id=update.effective_chat.id,
+                    chat_id=ADMIN_CHAT_ID,
                     document=f,
                     filename=os.path.basename(ics_path),
                     caption="Tap this to add the booking to your calendar 📅",
@@ -792,7 +782,8 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning(f"Failed to send ICS to admin: {e}")
 
- 
+
+
 
 async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """User sends payment screenshot – forward to admin if awaiting_payment."""
